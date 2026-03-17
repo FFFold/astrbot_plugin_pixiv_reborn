@@ -127,6 +127,7 @@ class PixivConfig:
         self.random_sent_illust_retention_days = self.config.get(
             "random_sent_illust_retention_days", 7
         )
+        self.anti_risk_edge_crop_max = self.config.get("anti_risk_edge_crop_max", 0)
         self.fanbox_sessid = self.config.get("fanbox_sessid", "").strip()
         self.fanbox_cookie = self.config.get("fanbox_cookie", "").strip()
         self.fanbox_user_agent = self.config.get("fanbox_user_agent", "").strip()
@@ -167,7 +168,8 @@ class PixivConfig:
             f"fanbox_sessid={'已设置' if self.fanbox_sessid else '未设置'}, "
             f"fanbox_cookie={'已设置' if self.fanbox_cookie else '未设置'}, "
             f"fanbox_user_agent={'已设置' if self.fanbox_user_agent else '未设置'}, "
-            f"fanbox_data_source='{self.fanbox_data_source}'"
+            f"fanbox_data_source='{self.fanbox_data_source}', "
+            f"anti_risk_edge_crop_max={self.anti_risk_edge_crop_max}"
         )
 
     def get_requests_kwargs(self) -> Dict[str, Any]:
@@ -234,6 +236,7 @@ class PixivConfigManager:
             "fanbox_sessid": {"type": "string", "hidden": True},
             "fanbox_cookie": {"type": "string", "hidden": True},
             "random_sent_illust_retention_days": {"type": "int", "min": 1, "max": 365},
+            "anti_risk_edge_crop_max": {"type": "int", "min": 0, "max": 5},
         }
 
     def get_help_text(self) -> str:
@@ -266,6 +269,7 @@ class PixivConfigManager:
             "random_search_min_interval",
             "random_search_max_interval",
             "random_sent_illust_retention_days",
+            "anti_risk_edge_crop_max",
         ]
 
         current = {}
