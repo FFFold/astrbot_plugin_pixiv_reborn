@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import aiofiles
 import io
+import random
 import shutil
 import subprocess
 import uuid
@@ -208,6 +209,131 @@ def _jpeg_ready_image(img):
     return img
 
 
+def _apply_anti_risk_crop(img: "PILImage.Image") -> "PILImage.Image":
+    """
+    应用抗风控随机边缘裁剪。
+    通过随机裁剪四边来破坏图片哈希，规避平台风控。
+
+    Args:
+        img: PIL Image 对象
+
+    Returns:
+        裁剪后的 PIL Image 对象（可能未改变）
+    """
+    if not _config:
+        return img
+
+    max_crop = getattr(_config, "anti_risk_edge_crop_max", 0)
+    if max_crop <= 0:
+        return img
+
+    width, height = img.size
+
+    # 小图片保护：确保裁剪后尺寸不会小于原尺寸的 98%
+    # 即：总裁剪量 ≤ 2% 的最小边
+    max_allowed_total = int(min(width, height) * 0.02)
+
+    # 限制单边裁剪量（取配置值和保护值的较小者）
+    max_per_side = min(max_crop, max_allowed_total // 2)
+
+    if max_per_side <= 0:
+        logger.debug(f"Pixiv 插件：图片尺寸过小({width}x{height})，跳过抗风控裁剪")
+        return img
+
+    # 随机生成四边裁剪量：0 ~ max_per_side
+    top = random.randint(0, max_per_side)
+    bottom = random.randint(0, max_per_side)
+    left = random.randint(0, max_per_side)
+    right = random.randint(0, max_per_side)
+
+    # 计算新尺寸
+    new_width = width - left - right
+    new_height = height - top - bottom
+
+    # 安全保护：确保不会把图片裁没了
+    if new_width <= 10 or new_height <= 10:
+        logger.warning(
+            f"Pixiv 插件：裁剪后图片尺寸过小({new_width}x{new_height})，跳过抗风控裁剪"
+        )
+        return img
+
+    # 执行裁剪
+    cropped = img.crop((left, top, width - right, height - bottom))
+
+    logger.info(
+        f"Pixiv 插件：抗风控裁剪 [{width}x{height}] → [{new_width}x{new_height}] "
+        f"(边距: T:{top} B:{bottom} L:{left} R:{right})"
+    )
+
+    return cropped
+
+
+async def _apply_anti_risk_crop_to_bytes(img_data: bytes) -> bytes:
+    """
+    对图片字节数据应用抗风控随机裁剪。
+    独立于PIL压缩配置，可单独启用。
+
+    Args:
+        img_data: 图片字节数据
+
+    Returns:
+        处理后的图片字节数据（可能未改变）
+    """
+    if not PILImage:
+        return img_data
+
+    if not _config:
+        return img_data
+
+    max_crop = getattr(_config, "anti_risk_edge_crop_max", 0)
+    if max_crop <= 0:
+        return img_data
+
+    try:
+        with io.BytesIO(img_data) as input_buf:
+            with PILImage.open(input_buf) as img:
+                # GIF不动图不处理
+                if (img.format or "").upper() == "GIF":
+                    return img_data
+
+                # 应用裁剪
+                cropped = _apply_anti_risk_crop(img)
+
+                # 如果裁剪了，保存回字节
+                if cropped is not img:
+                    fmt = (img.format or "JPEG").upper()
+                    with io.BytesIO() as output_buf:
+                        if fmt == "PNG":
+                            cropped.save(output_buf, format=fmt, optimize=True)
+                        elif fmt in ("JPEG", "JPG"):
+                            jpeg_img = _jpeg_ready_image(cropped)
+                            jpeg_img.save(
+                                output_buf,
+                                format="JPEG",
+                                quality=95,
+                                optimize=True,
+                                progressive=True,
+                            )
+                        else:
+                            # 其他格式尝试原格式保存，失败则转JPEG
+                            try:
+                                cropped.save(output_buf, format=fmt)
+                            except Exception:
+                                jpeg_img = _jpeg_ready_image(cropped)
+                                jpeg_img.save(
+                                    output_buf,
+                                    format="JPEG",
+                                    quality=95,
+                                    optimize=True,
+                                )
+                        return output_buf.getvalue()
+
+                return img_data
+    except Exception as e:
+        logger.warning(f"Pixiv 插件：抗风控裁剪失败，使用原图 - {e}")
+        return img_data
+
+
 def _save_with_quality(img, fmt: str, quality: int) -> bytes:
     """
     按指定质量保存图片到内存字节。
@@ -352,7 +478,10 @@ async def _build_image_from_bytes(img_data: bytes, ext: str = ".jpg") -> Image:
     Returns:
         构建好的 Image 组件
     """
-    # 仅在 file/byte 路径中按配置启用本地 PIL 压缩
+    # 1. 应用抗风控随机裁剪（独立于PIL压缩配置）
+    img_data = await _apply_anti_risk_crop_to_bytes(img_data)
+
+    # 2. 仅在 file/byte 路径中按配置启用本地 PIL 压缩
     if _config and _config.image_send_method in ("file", "byte"):
         img_data = await _maybe_compress_image_with_pil(img_data, ext=ext)
 
